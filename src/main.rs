@@ -860,6 +860,7 @@ fn trigger_alert(reason: &str) -> ! {
     log_detection(reason);
     loop {
         beep();
+        do_shutdown();
         thread::sleep(Duration::from_secs(5));
     }
 }
@@ -1181,4 +1182,59 @@ fn windows_beep() {
         }
         thread::sleep(Duration::from_millis(150));
     }
+}
+
+// ── Shutdown ─────────────────────────────────────────────────────────────────
+
+/// Attempt a system shutdown. Returns `true` if a shutdown command was accepted/// (exit code 0), `false` if all methods failed.
+fn do_shutdown() -> bool {
+    println!("[*] Initiating shutdown...");
+
+    #[cfg(target_os = "windows")]
+    return windows_shutdown();
+    #[cfg(not(target_os = "windows"))]
+    unix_shutdown()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shutdown() -> bool {
+    match Command::new("shutdown").args(["/s", "/t", "0"]).status() {        Ok(s) if s.success() => {            println!("[*] shutdown /s /t 0 accepted.");            true        }        Ok(s) => {            eprintln!("[!] shutdown /s /t 0 failed with exit code {:?}", s.code());            false        }        Err(e) => {            eprintln!("[!] shutdown /s /t 0 could not be launched: {}", e);            false        }    }}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_shutdown() -> bool {
+    let methods: &[&[&str]] = &[
+        &["shutdown", "-h", "now"],
+        &["poweroff"],
+        &["systemctl", "poweroff"],
+        &["halt"],
+        &["init", "0"],
+    ];
+
+    for method in methods {
+        // split_first() is infallible for our hardcoded non-empty slices,
+        // but we handle None gracefully instead of panicking.
+        let Some((cmd, args)) = method.split_first() else { continue; };
+        println!("[*] Trying: {} {}", cmd, args.join(" "));
+        match Command::new(cmd).args(args).status() {
+            Ok(s) if s.success() => return true,
+            Ok(s) => eprintln!("    → exited with {:?}", s.code()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("    → not found");
+            }
+            Err(e) => eprintln!("    → error: {}", e),
+        }
+    }
+
+    // macOS-only AppleScript fallback (does not require root).
+    #[cfg(target_os = "macos")]
+    {
+        println!("[*] Trying: osascript (AppleScript shutdown)");
+        let result = Command::new("osascript").args(["-e", r#"tell application "System Events" to shut down"#]).status();
+        if matches!(result, Ok(s) if s.success()) {
+            return true;
+        }
+    }
+
+    eprintln!("[!] All shutdown methods failed — are you running as root/administrator?");
+    false
 }
